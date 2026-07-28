@@ -322,11 +322,8 @@ python -m nova.cli generate   --model checkpoints/nova_rcv_tiny_final.pt --promp
 python -m nova.cli test
 python -m nova.cli audit
 python -m nova.cli benchmark  --dry-run
-<<<<<<< HEAD
-Sab kuch command line se, koi Python file edit nahi karni padt
-=======
+
 Sab kuch command line se, koi Python file edit nahi karni padti.
->>>>>>> 3d87249 (Add dataset selector: local files, TinyStories, WikiText, HF datasets)
 
 
 !python -m nova.cli train --model tiny --steps 500 --device cuda
@@ -334,3 +331,55 @@ Sab kuch command line se, koi Python file edit nahi karni padti.
 !python -m nova.cli train --model tiny --steps 500
 # Ab GPU auto-detect hoga agar available hai
 
+# 1. HuggingFace TinyStories (best for training - 2M stories)
+!python -m nova.cli train --model tiny --data tiny_stories --steps 500 --device cuda
+
+# 2. Local text file (apne data ke saath)
+!python -m nova.cli train --model small --data my_corpus.txt --steps 5000 --device cuda
+
+# 3. Any HuggingFace dataset
+!python -m nova.cli train --model medium --data "hf://wikitext" --steps 10000 --device cuda
+!python -m nova.cli train --model small --data "hf://codeparrot/github-code" --steps 5000 --device cuda
+
+# 1. HuggingFace TinyStories (2M+ stories — best for training)
+!python -m nova.cli train --model tiny --data tiny_stories --steps 500 --device cuda
+
+# 2. Apni text file
+!python -m nova.cli train --model small --data my_corpus.txt --steps 5000 --device cuda
+
+# 3. Koi bhi HuggingFace dataset
+!python -m nova.cli train --model medium --data "hf://wikitext" --steps 10000 --device cuda
+!python -m nova.cli train --model small --data "hf://codeparrot/github-code" --steps 5000 --device cuda
+
+
+
+
+tiny, small, medium, full_1b — inka matlab model size hai
+Ye preset configurations hain. Ek command se different size ke model bana sakte ho bina har parameter alag se set kiye.
+
+Size comparison table:
+Mode	Parameters	Memory (VRAM)	Speed (T4 GPU)	Kahan use karein
+tiny	1.5M params	< 256 MB	5000+ tok/s	✅ Testing ke liye — Colab free, CPU, kahi bhi chlega
+small	17M params	~1 GB	1500+ tok/s	✅ Colab T4 — asli training ke liye
+medium	118M params	~4 GB	500+ tok/s	✅ Colab Pro / RunPod — serious model
+full_1b	265M params	~8 GB	150+ tok/s	⚠️ A100 GPU — jab 1B target ho
+Matlab — ek line mein:
+tiny (1.5M): Test karna hai to ye lo. 2 minute mein result.
+small (17M): Chhota lekin kaam ka model. Colab free GPU pe chlega.
+medium (118M): Serious training. 118M params with 15 corrective iterations.
+full_1b (265M): 265M params with 30 iterations. Lekin ye 1B nahi hai — approx 1.5B Transformer ke barabar FLOPs hai.
+Ya custom bhi de sakte ho (--d-model se):
+
+# Custom size — parameters khud define karo
+python -m nova.cli train \
+  --d-model 2048 \        # Hidden size (default: 128)
+  --vocab-size 50257 \    # Vocabulary (default: 5000)
+  --slots 64 \            # Memory slots (default: 8)
+  --iterations 20 \        # Iterations per token (default: 5)
+  --expansion 4 \          # MLP expansion (default: 2)
+  --batch-size 2 \         # Batch size
+  --seq-len 512 \          # Context length
+  --steps 50000            # Training steps
+Isse tum apne GPU ke hisaab se exactly model size control kar sakte ho.
+
+Chhoti advice: Pehle --model tiny se test karo. Phir --model small ya custom size pe jao. medium/full_1b ke liye A100 class GPU chahiye.
