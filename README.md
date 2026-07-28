@@ -272,6 +272,15 @@ Agar ye karna hai	To ye command
 
 
 
+<<<<<<< HEAD
+=======
+
+
+
+
+
+
+>>>>>>> 3d87249 (Add dataset selector: local files, TinyStories, WikiText, HF datasets)
 ✅ Sab GitHub pe push ho chuka hai — bugs fixed
 https://github.com/anupbth1/NovaArchitecture
 6 commits, working tree clean, 0 pending changes.
@@ -313,4 +322,15 @@ python -m nova.cli generate   --model checkpoints/nova_rcv_tiny_final.pt --promp
 python -m nova.cli test
 python -m nova.cli audit
 python -m nova.cli benchmark  --dry-run
+<<<<<<< HEAD
 Sab kuch command line se, koi Python file edit nahi karni padt
+=======
+Sab kuch command line se, koi Python file edit nahi karni padti.
+>>>>>>> 3d87249 (Add dataset selector: local files, TinyStories, WikiText, HF datasets)
+
+
+!python -m nova.cli train --model tiny --steps 500 --device cuda
+
+!python -m nova.cli train --model tiny --steps 500
+# Ab GPU auto-detect hoga agar available hai
+
