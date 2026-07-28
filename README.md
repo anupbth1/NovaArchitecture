@@ -268,3 +268,49 @@ Agar ye karna hai	To ye command
 🧪 Tests	python -m nova.cli test
 🏋️ Full custom model	python -m nova.cli train --d-model 2048 --vocab-size 50257 --iterations 30 --data big_corpus.txt
 ⚠️ Reminder: RCV v1 is a Transformer variant, not a fundamentally new architecture. V2 design is separate.
+
+
+
+
+✅ Sab GitHub pe push ho chuka hai — bugs fixed
+https://github.com/anupbth1/NovaArchitecture
+6 commits, working tree clean, 0 pending changes.
+
+🐛 Bug jo Colab mein aaya tha — FIXED
+Issue	Cause	Fix
+SyntaxError: invalid syntax	python -m nova.cli terminal command ko Python cell mein run kiya	Colab mein !python prefix lagana (terminal cell)
+TypeError: stat: path should not be NoneType	--data argument optional tha lekin code None ko handle nahi karta tha	text_path=None check add kiya. Bina data ke synthetic data use hota hai
+✅ Colab pe test karne ka sahi tarika:
+
+# ──────────────────────
+# CELL 1: Setup
+# ──────────────────────
+!git clone https://github.com/anupbth1/NovaArchitecture.git
+%cd NovaArchitecture
+!pip install torch numpy
+
+# ──────────────────────
+# CELL 2: Train (terminal command — ! prefix zaroori)
+# ──────────────────────
+!python -m nova.cli train --model tiny --steps 500
+# Output: Parameters: 1.5M | Loss decreasing | Model saved
+
+# ──────────────────────
+# CELL 3: Test
+# ──────────────────────
+!python -m nova.cli test
+
+# ──────────────────────
+# CELL 4: Apne data ke saath train
+# ──────────────────────
+!python -m nova.cli train --model small --data sample.txt --steps 1000 --device cuda
+CLI commands ab available hain:
+
+python -m nova.cli train      --model tiny/small/medium/full_1b
+python -m nova.cli train      --d-model 1024 --vocab-size 50257 --steps 5000 --data file.txt
+python -m nova.cli convert    --from gpt2
+python -m nova.cli generate   --model checkpoints/nova_rcv_tiny_final.pt --prompt "Hello"
+python -m nova.cli test
+python -m nova.cli audit
+python -m nova.cli benchmark  --dry-run
+Sab kuch command line se, koi Python file edit nahi karni padt
