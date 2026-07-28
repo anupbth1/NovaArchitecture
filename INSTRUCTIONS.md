@@ -1,45 +1,103 @@
-# NovaArchitecture RCV - Complete Usage Guide
+# NovaArchitecture - Complete Usage Guide
 
-## 📋 Overview
+## Two Architectures in This Repo
 
-NovaArchitecture is a Recursive Computation Volume (RCV) language model.  
-**Current Status**: ⚠️ Research Prototype - Training convergence issues under investigation.
+| Version | Status | Description |
+|---------|--------|-------------|
+| **RCV v1** | ⚠️ Frozen research baseline | Transformer variant. Corrective iteration LM. Working but slow. |
+| **Nova V2** | 🚧 In development (Phases 1-3 done) | **Zero Transformer components.** Structural computation. |
 
 ---
 
-## 1. 🚀 Quick Start
+## V2: Zero Transformer Components (New Architecture)
 
-### 1.1 Google Colab Setup
+### Concept
 
-Open this notebook in Colab: [NovaArchitecture Colab Notebook](https://colab.research.google.com/github/anupbth1/NovaArchitecture/blob/main/NovaArchitecture_Colab.ipynb)
+```diff
+- No embedding matrix (16 bytes/token vs 8192 bytes)
+- No hidden state vectors (set of bindings vs 2048 floats)
+- No Attention / MLP (pattern matching vs matrix multiply)
+- No backpropagation (rule weight updates vs gradient descent)
++ Only: integers, sets, patterns, and rules
+```
 
-Or manually:
+---
+
+### 🟢 Colab Setup (Free T4 GPU) - 2 Minutes
+
+Open https://colab.research.google.com/ → New Notebook → Runtime → Change runtime type → **T4 GPU**
 
 ```python
-# In Colab: Runtime → Change runtime type → T4 GPU (or CPU if no GPU)
-# Then run:
-
-# Step 1: Clone the repo
+# ───────────────────────────────────────────
+# CELL 1: Clone and setup
+# ───────────────────────────────────────────
 !git clone https://github.com/anupbth1/NovaArchitecture.git
 %cd NovaArchitecture
 
-# Step 2: Install dependencies
-!pip install torch numpy transformers datasets tqdm
+# ───────────────────────────────────────────
+# CELL 2: Run V2 demo (zero Transformer components)
+# ───────────────────────────────────────────
+!python nova/v2/demo_all.py
 
-# Step 3: Run tests
+# Output:
+#   PARSING TOKENS -> FINGERPRINTS (16 bytes/token vs 8192)
+#   WORKING MEMORY (set of bindings vs hidden states)
+#   RULE ENGINE (pattern matching vs attention/MLP)
+#   Zero Transformer components confirmed
+
+# ───────────────────────────────────────────
+# CELL 3: Run V2 Phase 1 (Fingerprint Parser)
+# ───────────────────────────────────────────
+!python nova/v2/fingerprint.py
+
+# ───────────────────────────────────────────
+# CELL 4: Run V2 Phase 2 (Working Memory)
+# ───────────────────────────────────────────
+!python nova/v2/memory.py
+
+# ───────────────────────────────────────────
+# CELL 5: Run V2 Phase 3 (Rule Engine)
+# ───────────────────────────────────────────
+!python nova/v2/rules.py
+
+# ───────────────────────────────────────────
+# CELL 6: Run V1 tests (optional - V1 is frozen)
+# ───────────────────────────────────────────
 !python tests/test_rcv.py
 
-# Step 4: Run demo
-!python examples/demo.py
-
-# Step 5: Run architecture audit
-!python tools/audit.py
-
-# Step 6: Run benchmarks (dry run)
-!python benchmarks/run_benchmarks.py --dry-run
+# ───────────────────────────────────────────
+# CELL 7: V1 CLI (V1 is frozen, but works)
+# ───────────────────────────────────────────
+!python -m nova.cli train --model tiny --steps 200 --device cuda
 ```
 
-### 1.2 Local Setup
+---
+
+### 🟢 RunPod Setup (A100 - for serious training)
+
+```bash
+# Start: RunPod → GPU Pod → A100 (40GB) → PyTorch template
+
+# Clone and setup
+git clone https://github.com/anupbth1/NovaArchitecture.git
+cd NovaArchitecture
+
+# Run V2 demo
+python nova/v2/demo_all.py
+
+# Run individual V2 phases
+python nova/v2/fingerprint.py
+python nova/v2/memory.py
+python nova/v2/rules.py
+
+# V1 training (frozen, optional)
+pip install torch numpy
+python -m nova.cli train --model small --data tiny_stories --steps 5000 --device cuda
+```
+
+---
+
+### 🟢 Local PC Setup
 
 ```bash
 # Prerequisites: Python 3.10+, pip, git
@@ -48,326 +106,179 @@ Or manually:
 git clone https://github.com/anupbth1/NovaArchitecture.git
 cd NovaArchitecture
 
-# Recommended: Create virtual environment
-python -m venv venv
-source venv/bin/activate  # Linux/Mac
-venv\Scripts\activate     # Windows
+# V2 runs without any dependencies (pure Python - no PyTorch needed for V2!)
+python nova/v2/demo_all.py
 
-# Install
-pip install -r nova/requirements.txt
+# Optional: install PyTorch for V1
+pip install torch numpy
+python -m nova.cli train --model tiny --steps 200
 ```
 
 ---
 
-## 2. 📁 Project Structure
+## V2 Phase-by-Phase Explanation
 
-```
-NovaArchitecture/
-├── nova/                      # Main package
-│   ├── __init__.py           # Package exports
-│   ├── rcv/                  # CORE: RCV implementation
-│   │   ├── brain_cell.py     # The knowledge MLP (reused iteratively)
-│   │   ├── slot_debate.py    # Multi-perspective slot attention
-│   │   ├── reasoner.py       # Iterative reasoning loop
-│   │   ├── nova_brain.py     # Complete RCV model
-│   │   ├── config.py         # Configuration
-│   │   └── trainer.py        # Training pipeline
-│   ├── brain/                # Pipeline orchestration
-│   ├── reasoning/            # Hypothesis generation/verification
-│   ├── memory/               # Dynamic knowledge graph
-│   ├── planner/              # Goal planning
-│   ├── core/                 # Low-level data structures
-│   ├── representation/       # Semantic units & tokenization
-│   └── workers/              # Parallel execution
-├── benchmarks/               # Evaluation benchmarks
-│   ├── coding_benchmark.py   # Code generation tests (9 cases)
-│   ├── reasoning_benchmark.py# Logic/math tests (9 cases)
-│   ├── debugging_benchmark.py# Bug finding tests (6 cases)
-│   ├── knowledge_benchmark.py# Factual knowledge tests (6 cases)
-│   └── run_benchmarks.py     # Benchmark runner
-├── docs/                     # Documentation
-│   ├── 000_Project_Vision.md
-│   ├── 001_Requirements.md
-│   ├── 002_Architecture.md
-│   ├── 003_DataFlow.md
-│   ├── 004_Mathematics.md
-│   ├── Decisions.md
-│   └── ARCHITECTURE_AUDIT_REPORT.md  # Latest audit
-├── examples/
-│   └── demo.py               # Full demo script
-├── tests/
-│   └── test_rcv.py           # 10 unit tests
-├── tools/
-│   ├── audit.py              # Architecture audit tool
-│   └── iteration_scaling_test.py  # Training convergence test
-├── INSTRUCTIONS.md           # This file
-└── nova/requirements.txt     # Python dependencies
-```
+### Phase 1: Fingerprint Parser (`nova/v2/fingerprint.py`)
 
----
-
-## 3. 🧪 Running Tests
-
-```bash
-# Run all 10 unit tests
-python tests/test_rcv.py
-
-# Expected output:
-# ============================================================
-# NovaRCV Test Suite
-# ============================================================
-#   ✅ test_config: param_count=1,509,888
-#   ✅ test_brain_cell: output shape torch.Size([2, 16, 64])
-#   ✅ test_slot_debate: output shape torch.Size([2, 16, 64])
-#   ✅ test_reasoner: iterations=5, output_shape=torch.Size([2, 16, 64])
-#   ✅ test_reasoner_deep_supervision: loss=3.076
-#   ✅ test_nova_rcv_forward: logits shape torch.Size([2, 16, 5000])
-#   ✅ test_nova_rcv_training: loss=7.005
-#   ✅ test_nova_rcv_param_count: total=722,316, effective=3.6M
-#   ✅ test_generate: output shape torch.Size([1, 15])
-#   ✅ test_adaptive_iter_limits: default=6.974, high=6.974, low=5.608
-# ============================================================
-# Results: 10/10 passed, 0 failed
-```
-
----
-
-## 4. 🎯 Running Demo
-
-```bash
-# Run the complete demo
-python examples/demo.py
-
-# This shows:
-# - Model creation with parameter counts
-# - Training on synthetic data (20 steps)
-# - Adaptive compute demonstration
-# - Theoretical analysis vs Transformers
-```
-
----
-
-## 5. 📊 Running Benchmarks
-
-```bash
-# Dry run (just shows structure, no model needed)
-python benchmarks/run_benchmarks.py --dry-run
-
-# Run all benchmarks with a model
-python benchmarks/run_benchmarks.py --train
-
-# Run specific benchmarks
-python benchmarks/run_benchmarks.py --benchmarks coding,reasoning
-
-# Output:
-#   coding: 9 tests (Fibonacci, FizzBuzz, Binary Search, etc.)
-#   reasoning: 9 tests (Logic, Math, Planning, etc.)
-#   debugging: 6 tests (Bug finding/fixing)
-#   knowledge: 6 tests (Facts)
-```
-
----
-
-## 6. 🔍 Running Architecture Audit
-
-```bash
-# Comprehensive architecture analysis
-python tools/audit.py
-
-# This measures:
-# - Parameter counts and FLOPs
-# - Gradient flow analysis
-# - Inference and training speed
-# - Transformer-likeness score
-# - All detected issues
-
-# Iteration scaling test (deep investigation)
-python tools/iteration_scaling_test.py
-```
-
----
-
-## 7. ⚙️ Configuration Options
-
-Edit `nova/rcv/config.py` to change model scale:
+**What it does**: Converts tokens to structural fingerprints without embeddings.
 
 ```python
-@dataclass
-class RCVConfig:
-    # Model size
-    d_model: int = 2048        # Hidden dimension (128=tiny, 2048=full)
-    vocab_size: int = 50257    # Vocabulary (5000=tiny, 50257=GPT-2)
-    num_slots: int = 64        # Memory slots (8=tiny, 64=full)
-    expansion: int = 4         # MLP expansion (2=tiny, 4-8=full)
-    max_iterations: int = 30   # Iterations per token (10=tiny, 30-50=full)
-    
-    # Training
-    batch_size: int = 4
-    seq_len: int = 256
-    lr: float = 3e-4
-    total_steps: int = 100000
-    
-    # Adaptive compute
-    min_iter: int = 5          # Minimum iterations for easy tokens
-    max_iter_cap: int = 50     # Maximum iterations for hard tokens
+from nova.v2.fingerprint import FingerprintParser
+
+parser = FingerprintParser()
+parser.fit(["The", "cat", "sat"])  # Learn frequencies
+
+fp = parser.parse("cat", pos=0)
+print(fp.hash, fp.freq_class, fp.type_class, fp.pos)
+# Output: 550141, 255, 0, 0
+#          ^hash  ^freq    ^type ^pos
 ```
 
-### Recommended Configurations
-
-| Config | Params | FLOPs/token | Use Case |
-|--------|--------|-------------|----------|
-| Tiny (d=128, iter=10) | 1.6M | 0.01B | Testing on CPU |
-| Small (d=512, iter=15) | 17M | 0.25B | Colab free GPU |
-| Medium (d=1024, iter=20) | 118M | 1.43B | 8GB GPU |
-| Full (d=2048, iter=30) | 265M | 6.55B | 12GB+ GPU |
-| Large (d=3072, iter=50) | ~800M | ~20B | 24GB+ GPU |
+**No embedding matrix.** Just hashing + counting + classification.
 
 ---
 
-## 8. 💻 Colab Testing Instructions (Step-by-Step)
+### Phase 2: Working Memory (`nova/v2/memory.py`)
 
-### Google Colab Link: https://colab.research.google.com/
+**What it does**: Maintains state as a set of (role, value) bindings.
 
 ```python
-# ───────────────────────────────────────────
-# CELL 1: Clone and setup (run this first)
-# ───────────────────────────────────────────
+from nova.v2.memory import WorkingMemory, RoleVocabulary
+
+roles = RoleVocabulary()
+memory = WorkingMemory()
+memory.add(roles.get_id("SUBJECT"), 550141)  # SUBJECT = cat
+memory.add(roles.get_id("VERB"), 567565)      # VERB = sat
+
+matches = memory.match(role=roles.get_id("SUBJECT"))
+print(matches)  # [(10, 550141)]
+```
+
+**No hidden state vectors.** Just a dynamic set of bindings.
+
+---
+
+### Phase 3: Rule Engine (`nova/v2/rules.py`)
+
+**What it does**: Pattern matching replaces attention + MLP.
+
+```python
+from nova.v2.rules import RuleEngine, Pattern, Action, Rule
+from nova.v2.memory import RoleVocabulary
+
+roles = RoleVocabulary()
+engine = RuleEngine()
+
+# Rule: if position < 5, mark as "early"
+rule = Rule(
+    pattern=Pattern(value_constraints=[(roles.get_id("POSITION"), 'lt', 5)]),
+    action=Action(add=[(roles.get_id("CONTEXT"), 1)]),
+    weight=0.5,
+)
+engine.add_rule(rule)
+
+memory, trace = engine.forward_with_trace(memory)
+```
+
+**No matrix multiplication.** No QKV. No GELU. Just integer comparisons.
+
+---
+
+## API Reference
+
+### V2 Components
+
+| Class | File | Purpose |
+|-------|------|---------|
+| `FingerprintParser` | `fingerprint.py` | Token → (hash, freq, type, pos) |
+| `StructuralFingerprint` | `fingerprint.py` | 4-integer token representation |
+| `FrequencyTracker` | `fingerprint.py` | Learn token frequency distribution |
+| `WorkingMemory` | `memory.py` | Dynamic set of (role, value) bindings |
+| `RoleVocabulary` | `memory.py` | Role name ↔ integer ID mapping |
+| `Pattern` | `rules.py` | Condition on memory state |
+| `Action` | `rules.py` | Transformation on memory |
+| `Rule` | `rules.py` | Pattern → Action + learned weight |
+| `RuleEngine` | `rules.py` | Applies all rules to memory |
+
+### V1 Components (Frozen)
+
+| Command | Purpose |
+|---------|---------|
+| `python -m nova.cli train --model tiny` | Train tiny V1 model |
+| `python -m nova.cli test` | Run V1 tests |
+| `python -m nova.cli convert --from gpt2` | Convert GPT-2 to V1 |
+
+---
+
+## File Structure
+
+```
+nova/v2/              # V2: Zero Transformer components (Phases 1-3 done)
+  __init__.py
+  fingerprint.py      # Phase 1: Token → 4 integers (16 bytes vs 8192)
+  memory.py           # Phase 2: Set of (role, value) bindings
+  rules.py            # Phase 3: Pattern matching rule engine
+  demo_all.py         # End-to-end demo of Phases 1-3
+
+nova/rcv/             # V1: Frozen research baseline
+  brain_cell.py       # Transformer-like MLP
+  slot_debate.py      # Transformer-like attention
+  reasoner.py         # Corrective iteration loop
+  nova_brain.py       # Complete V1 model
+  config.py           # Configuration
+  trainer.py          # Training pipeline
+
+nova/cli.py           # CLI: python -m nova.cli [command]
+```
+
+---
+
+## Requirements
+
+| Component | Dependencies |
+|-----------|-------------|
+| **V2 (Phases 1-3)** | **None! Pure Python** (no PyTorch needed) |
+| V1 training | `pip install torch numpy` |
+| V1 CLI | `pip install torch numpy` |
+| Benchmarks | `pip install torch numpy` |
+| Convert existing | `pip install transformers` |
+
+---
+
+## Known Issues
+
+| Issue | Affects | Status |
+|-------|---------|--------|
+| Training not converging | V1 only | Frozen - documented in audit |
+| Slow sequential processing | V1 only | Architectural limitation |
+| Zero Transformer rule | V2 | ✅ Phases 1-3 pass |
+| Learning algorithm (Phase 4) | V2 | Not yet implemented |
+| Text generation (Phase 5) | V2 | Not yet implemented |
+
+---
+
+## Quick Reference Card
+
+### Colab
+```python
 !git clone https://github.com/anupbth1/NovaArchitecture.git
 %cd NovaArchitecture
-
-# ───────────────────────────────────────────
-# CELL 2: Install dependencies
-# ───────────────────────────────────────────
-!pip install torch numpy transformers datasets tqdm
-
-# ───────────────────────────────────────────
-# CELL 3: Verify installation
-# ───────────────────────────────────────────
-!python -c "import torch; print(f'PyTorch {torch.__version__}, CUDA: {torch.cuda.is_available()}')"
-
-# ───────────────────────────────────────────
-# CELL 4: Run tests
-# ───────────────────────────────────────────
-!python tests/test_rcv.py
-
-# ───────────────────────────────────────────
-# CELL 5: Run demo
-# ───────────────────────────────────────────
-!python examples/demo.py
-
-# ───────────────────────────────────────────
-# CELL 6: Run architecture audit
-# ───────────────────────────────────────────
-!python tools/audit.py
-
-# ───────────────────────────────────────────
-# CELL 7: Run iteration scaling test
-# ───────────────────────────────────────────
-!python tools/iteration_scaling_test.py
-
-# ───────────────────────────────────────────
-# CELL 8: Run benchmarks (dry run)
-# ───────────────────────────────────────────
-!python benchmarks/run_benchmarks.py --dry-run
-
-# ───────────────────────────────────────────
-# CELL 9 (Optional): Train small model
-# ───────────────────────────────────────────
-import sys, torch
-sys.path.insert(0, '.')
-from nova.rcv.nova_brain import NovaRCV
-from nova.rcv.config import RCVConfig
-
-config = RCVConfig(d_model=128, vocab_size=5000, expansion=2, num_slots=8, max_iterations=10)
-model = NovaRCV(config)
-print(f"Parameters: {sum(p.numel() for p in model.parameters()):,}")
-
-optimizer = torch.optim.AdamW(model.parameters(), lr=3e-4)
-for step in range(50):
-    x = torch.randint(0, 5000, (4, 32))
-    loss = model(x, targets=x)
-    optimizer.zero_grad()
-    loss.backward()
-    torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
-    optimizer.step()
-    if step % 10 == 0:
-        print(f"Step {step}: loss={loss.item():.4f}")
+!python nova/v2/demo_all.py                          # V2 demo
+!python -m nova.cli test                              # V1 tests
+!python -m nova.cli train --model tiny --steps 200    # V1 train
 ```
 
----
-
-## 9. ⚡ Known Issues & Current Limitations
-
-| Issue | Status | Impact |
-|-------|--------|--------|
-| Training does not converge | 🚧 Under investigation | Model cannot learn from data |
-| More iterations = worse loss | 🚧 Under investigation | Core RCV premise broken |
-| Workspace activation explosion | 🚧 Under investigation | Unbounded norm growth |
-| "600B" FLOP claim invalid | ✅ Documented | Marketing claim, not technical |
-| Sequential token processing | ⚠️ Architectural | O(T) latency vs Transformer O(1) |
-| Position encoding limited length | ⚠️ Known | Generation degrades after seq_len |
-
-See `docs/ARCHITECTURE_AUDIT_REPORT.md` for full details.
-
----
-
-## 10. 🛠️ Development
-
-### Adding new features
-
-```python
-# Create new module
-touch nova/myfeature/__init__.py
-
-# Add to imports in nova/__init__.py
-from .myfeature import MyFeature
-
-# Create tests
-touch tests/test_myfeature.py
-
-# Create benchmarks
-touch benchmarks/myfeature_benchmark.py
-
-# Add to benchmark runner
-# Edit benchmarks/run_benchmarks.py
-```
-
-### Running specific file
-
+### Local
 ```bash
-# From project root
-python -m nova.rcv.nova_brain    # Module import
-python tests/test_rcv.py          # Direct script
-python -m pytest tests/           # Using pytest
+git clone https://github.com/anupbth1/NovaArchitecture.git
+cd NovaArchitecture
+python nova/v2/demo_all.py            # V2 (no install needed)
+python -m nova.cli test                # V1 (needs torch)
 ```
 
----
-
-## 11. 📦 Dependencies
-
-```
-torch>=2.0.0          # Core tensor operations
-numpy>=1.21.0         # Numerical operations
-datasets>=2.0.0       # For loading TinyStories (optional)
-transformers>=4.30.0  # For tokenizer (optional)
-tqdm>=4.64.0          # Progress bars (optional)
-```
-
-Install: `pip install -r nova/requirements.txt`
-
----
-
-## 12. 📝 License
-
-MIT License - See LICENSE file
-
----
-
-## 13. 🙋 Support
-
-- GitHub Issues: https://github.com/anupbth1/NovaArchitecture/issues
-- Author: anupbth1
-
----
-
-*Last updated: 2026-07-28*
+### RunPod
+```bash
+git clone https://github.com/anupbth1/NovaArchitecture.git
+cd NovaArchitecture
+python nova/v2/demo_all.py
+python -m nova.cli train --model small --data tiny_stories --steps 5000 --device cuda
