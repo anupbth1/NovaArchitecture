@@ -100,7 +100,8 @@ def train_v2_llm(
     reverse = ReverseHashTable()
     for t in unique_tokens:
         reverse.add(t, freq[t])
-    print(f"  {reverse.size} hashes, {reverse.total_tokens} tokens")
+    total = sum(len(v) for v in reverse.table.values())
+    print(f"  {reverse.size} hashes, {total} tokens")
     
     print("\n[3/5] INITIALIZING V2")
     roles = RoleVocabulary()
