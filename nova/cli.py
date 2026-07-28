@@ -87,7 +87,8 @@ def cmd_train(args):
     total_params = sum(p.numel() for p in model.parameters())
     print(f"  Parameters: {total_params:,} ({total_params/1e6:.1f}M)")
     
-    # Load data
+    # Load data (or use synthetic)
+    data = None
     if args.data and os.path.exists(args.data):
         with open(args.data, 'r', encoding='utf-8') as f:
             text = f.read()
@@ -95,7 +96,7 @@ def cmd_train(args):
         char_to_idx = {c: i for i, c in enumerate(chars)}
         data = torch.tensor([char_to_idx.get(c, 0) for c in text], dtype=torch.long)
         print(f"  Data: {len(text)} chars, {len(chars)} unique")
-    else:
+    if data is None:
         print(f"  No data file. Using synthetic random data.")
         data = torch.randint(0, min(cfg.vocab_size, 100), (10000,))
     

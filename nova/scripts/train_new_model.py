@@ -63,11 +63,11 @@ CONFIGS = {
 
 class TextDataset(torch.utils.data.Dataset):
     """Simple text dataset for training."""
-    def __init__(self, text_path: str, seq_len: int, vocab_size: int):
+    def __init__(self, text_path: str = None, seq_len: int = 128, vocab_size: int = 5000):
         self.seq_len = seq_len
         self.vocab_size = vocab_size
         
-        if os.path.exists(text_path):
+        if text_path is not None and os.path.exists(text_path):
             with open(text_path, 'r', encoding='utf-8') as f:
                 text = f.read()
             # Simple char-level tokenization for demo
