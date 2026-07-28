@@ -1,33 +1,15 @@
 """
-NovaRCV
-=======
-The complete RCV-powered LLM.
+NovaRCV — v2 (Fixed)
+====================
 
-Architecture:
-1. Embedding: tokens → vectors (B, T) → (B, T, D)
-2. For each token t:
-   a. Inject token into workspace (64 slots)
-   b. Iterate N times: BrainCell → SlotDebate
-   c. Read first slot → predict next token
-3. Workspace propagates across tokens (context persistence)
-4. Adaptive compute: hard tokens get more iterations
-
-Training: Deep supervision on all intermediate iterations
-Decoding: Adaptive iteration count based on model uncertainty
-
-Parameter scaling (to hit 1B):
-- d_model=2048, expansion=4: ~273M
-- d_model=2560, expansion=4: ~430M  
-- d_model=3072, expansion=4: ~620M
-- d_model=2048, expansion=8: ~510M
-- d_model=2048, expansion=12: ~730M
-- d_model=2560, expansion=8: ~850M
-- d_model=3072, expansion=8: ~1.2B
-
-Effective compute depth at max_iter=50:
-- 50 layers of d_model=3072, expansion=8 = 400 layer-equivalent Transformer
-- This gives quality comparable to 600B+ parameter models
+Fixes from architecture audit:
+1. Corrective iterations: Each iteration predicts the RESIDUAL error of all previous.
+2. Deep supervision now works via corrective loss (boosting-style).
+3. Position encoding: Fixed to sinusoidal (no learned limit).
+4. Iteration scaling: More iterations should NOW reduce loss (boosting property).
+5. Training: Uses corrective loss + truncated implicit backprop.
 """
+import math
 from typing import List, Optional, Tuple, Union
 import torch
 import torch.nn as nn
@@ -39,10 +21,14 @@ from .reasoner import AdaptiveReasoner
 
 class NovaRCV(nn.Module):
     """
-    Nova RCV - Recursive Computation Volume Language Model.
+    Nova RCV with corrective iterations.
     
-    1B parameters in training, 600B+ effective compute at inference.
-    No MoE. No mixture of anything. Iterative reuse of a single dense brain.
+    Architecture:
+    1. Embed tokens (sinusoidal pos encoding, no learned limit)
+    2. For each token: inject into workspace → iterative correction loop
+    3. Each iteration outputs a CORRECTION delta, not a full prediction
+    4. Final output = base prediction + sum(all corrections)
+    5. Loss: each iteration's cumulative prediction gets CE loss (boosting)
     """
     def __init__(self, config: RCVConfig):
         super().__init__()
@@ -50,17 +36,17 @@ class NovaRCV(nn.Module):
         
         # Token embedding
         self.embed = nn.Embedding(config.vocab_size, config.d_model)
-        self.embed_scale = config.d_model ** 0.5  # Scale embeddings
+        self.embed_scale = config.d_model ** 0.5
         
-        # Initial workspace (learned "blank state" of the model)
+        # Initial workspace
         self.init_workspace = nn.Parameter(
             torch.randn(1, config.num_slots, config.d_model) * 0.02
         )
         
-        # Position encoding (learned, since we iterate per token not in parallel)
-        self.pos_embed = nn.Embedding(config.seq_len, config.d_model)
+        # Base prediction head (iteration 0 — before any refinement)
+        self.base_proj = nn.Linear(config.d_model, config.d_model)
         
-        # The iterative reasoning engine
+        # The iterative reasoner (corrective mode)
         self.reasoner = AdaptiveReasoner(
             d_model=config.d_model,
             num_slots=config.num_slots,
@@ -68,26 +54,59 @@ class NovaRCV(nn.Module):
             expansion=config.expansion,
         )
         
-        # Output head
+        # Output projection (shared for all iterations)
         self.ln_out = nn.LayerNorm(config.d_model)
         self.head = nn.Linear(config.d_model, config.vocab_size)
         
-        # Initialize weights
-        self._init_weights()
+        # Sinusoidal position encoding (NO learned limit)
+        # This supports generation beyond any training length
+        self._init_sinusoidal_pos(config.d_model, config.seq_len * 4)
         
+        self._init_weights()
+    
+    def _init_sinusoidal_pos(self, d_model: int, max_len: int = 8192):
+        """Sinusoidal position encoding — no learned parameters, unlimited length."""
+        pe = torch.zeros(max_len, d_model)
+        position = torch.arange(0, max_len, dtype=torch.float).unsqueeze(1)
+        div_term = torch.exp(torch.arange(0, d_model, 2).float() * 
+                           (-math.log(10000.0) / d_model))
+        pe[:, 0::2] = torch.sin(position * div_term)
+        pe[:, 1::2] = torch.cos(position * div_term)
+        pe = pe.unsqueeze(0)  # (1, max_len, D)
+        self.register_buffer('pos_encoding', pe, persistent=False)
+    
+    def _get_pos_encoding(self, pos_ids: torch.Tensor) -> torch.Tensor:
+        """Get position encoding for arbitrary positions.
+        pos_ids: (B, T) or (T,). Returns (B, T, D).
+        """
+        if pos_ids.dim() == 2:
+            B, T = pos_ids.shape
+            flat = pos_ids.reshape(1, -1)  # (1, B*T) for gather
+            gathered = F.embedding(
+                (flat % self.pos_encoding.size(1)).long(),
+                self.pos_encoding[0]  # (max_len, D)
+            )  # (1, B*T, D)
+            return gathered.reshape(B, T, self.pos_encoding.size(-1))
+        else:
+            # (T,) → (1, T, D)
+            flat = pos_ids.unsqueeze(0)  # (1, T)
+            gathered = F.embedding(
+                (flat % self.pos_encoding.size(1)).long(),
+                self.pos_encoding[0]
+            )
+            return gathered  # (1, T, D)
+    
     def _init_weights(self):
-        """Initialize weights for stable training with iterative reuse."""
         for module in self.modules():
-            if isinstance(module, nn.Linear):
-                # Use smaller initialization for iterative models
+            if isinstance(module, nn.Linear) and module is not self.head:
                 nn.init.normal_(module.weight, mean=0.0, std=0.01)
                 if module.bias is not None:
                     nn.init.zeros_(module.bias)
             elif isinstance(module, nn.Embedding):
                 nn.init.normal_(module.weight, mean=0.0, std=0.01)
-            elif isinstance(module, nn.LayerNorm):
+            elif isinstance(module, nn.LayerNorm) or isinstance(module, nn.RMSNorm):
                 nn.init.ones_(module.weight)
-                nn.init.zeros_(module.bias)
+                nn.init.zeros_(module.bias) if hasattr(module, 'bias') and module.bias is not None else None
     
     def forward(
         self,
@@ -97,108 +116,92 @@ class NovaRCV(nn.Module):
         return_losses: bool = False,
     ) -> Union[torch.Tensor, Tuple[torch.Tensor, torch.Tensor]]:
         """
-        Forward pass with per-token iterative reasoning.
+        Forward pass.
         
-        Args:
-            idx: (B, T) input token IDs
-            targets: (B, T) target token IDs (for training)
-            iter_limits: int (same for all tokens) or List[int] (per token)
-            return_losses: Return individual losses for adaptive compute
-            
-        Returns:
-            logits: (B, T, vocab) if targets=None
-            loss: scalar if targets provided
-            (loss, per_token_losses) if return_losses
+        Architecture: Token → Reasoner (iterative corrections) → Head → Logits
+        
+        The reasoner produces corrections. Each correction is ADDED to a running
+        cumulative vector. The head projects this to vocabulary. All iterations
+        are trained via cross-entropy on the cumulative prediction.
         """
         B, T = idx.shape
         device = idx.device
         
-        # Embed tokens with scaling
-        x = self.embed(idx) * self.embed_scale  # (B, T, D)
+        # Embed tokens with sinusoidal position encoding
+        x = self.embed(idx) * self.embed_scale
+        pos_ids = torch.arange(T, device=device).unsqueeze(0)
+        x = x + self._get_pos_encoding(pos_ids)
         
-        # Add position encoding
-        pos = torch.arange(T, device=device).unsqueeze(0)  # (1, T)
-        x = x + self.pos_embed(pos)
-        
-        # Initialize workspace for this batch
+        # Initialize workspace from previous token (zero for first)
         workspace = self.init_workspace.expand(B, -1, -1)  # (B, M, D)
         
-        # Process each token sequentially
+        # Determine iteration limits
+        if isinstance(iter_limits, int):
+            limits = [iter_limits] * T
+        elif isinstance(iter_limits, list):
+            limits = iter_limits + [self.config.max_iterations] * (T - len(iter_limits))
+        else:
+            limits = [self.config.max_iterations] * T
+        
         all_logits = []
-        all_iter_logits_list = []  # List of (B, actual_iters, vocab) per token
+        all_corrections_list = []
         
         for t in range(T):
             token_embed = x[:, t:t+1, :]  # (B, 1, D)
             
-            # Determine iteration limit for this token
-            if isinstance(iter_limits, list):
-                limit = iter_limits[t] if t < len(iter_limits) else self.config.max_iterations
-            elif isinstance(iter_limits, int):
-                limit = iter_limits
-            else:
-                limit = self.config.max_iterations
-            
-            # Iterative reasoning on this token
-            workspace, iter_outputs = self.reasoner(
+            # Run reasoner: workspace was updated by previous token,
+            # now correct for this new token
+            workspace, corrections = self.reasoner(
                 workspace, token_embed,
-                iter_limit=limit,
+                iter_limit=limits[t],
                 return_all=True
             )
-            # iter_outputs: (B, actual_iters, D)
+            # corrections: (B, actual_iters, D)
             
-            # Project all intermediate states to vocabulary
-            iter_logits = self.head(self.ln_out(iter_outputs))  # (B, actual_iters, vocab)
-            all_iter_logits_list.append(iter_logits)
+            # Cumulative ensemble: start from zero, add each correction
+            cumulative = corrections[:, 0:1, :]  # First correction is the base
+            for i in range(1, corrections.size(1)):
+                cumulative = cumulative + corrections[:, i:i+1, :]
             
-            # Use final iteration's state for prediction
-            final_logit = iter_logits[:, -1:, :]  # (B, 1, vocab)
-            all_logits.append(final_logit)
+            # Final logits
+            final_logits = self.head(self.ln_out(cumulative))
+            all_logits.append(final_logits)
+            all_corrections_list.append(corrections)
         
-        # Concatenate all token logits
         logits = torch.cat(all_logits, dim=1)  # (B, T, vocab)
         
         if targets is None:
             return logits
         
-        # === TRAINING MODE: Compute losses ===
-        
-        # 1. Final loss (standard next-token prediction)
-        final_loss = F.cross_entropy(
-            logits.view(-1, logits.size(-1)),
-            targets.view(-1),
-            reduction='mean'
-        )
-        
-        # 2. Deep supervision loss (intermediate iterations)
-        deep_loss = 0.0
-        per_token_losses = []
+        # === CORRECTIVE TRAINING LOSS ===
+        # Each iteration i predicts the CUMULATIVE sum
+        # Loss: CE(Head(cumulative_i), target) for each i
+        total_loss = 0.0
+        final_loss = 0.0
+        total_weight_sum = 0.0
         
         for t in range(T):
-            iter_logits_t = all_iter_logits_list[t]  # (B, actual_iters, vocab)
-            actual_iters = iter_logits_t.size(1)
-            target_t = targets[:, t]  # (B,)
+            corrections = all_corrections_list[t]  # (B, actual_iters, D)
+            target_t = targets[:, t]
             
-            token_deep_loss = 0.0
-            for i in range(actual_iters):
-                # Weight: iter_weights[i] from reasoner (late iters more important)
+            cumulative = torch.zeros_like(corrections[:, 0:1, :])
+            for i in range(corrections.size(1)):
+                cumulative = cumulative + corrections[:, i:i+1, :]
+                logits_i = self.head(self.ln_out(cumulative))
+                loss_i = F.cross_entropy(logits_i.squeeze(1), target_t, reduction='mean')
+                
                 w = self.reasoner.iter_weights[i].item() if i < len(self.reasoner.iter_weights) else 1.0
-                loss_i = F.cross_entropy(iter_logits_t[:, i, :], target_t, reduction='mean')
-                token_deep_loss += w * loss_i
-            
-            token_deep_loss = token_deep_loss / actual_iters
-            deep_loss += token_deep_loss
-            per_token_losses.append(token_deep_loss.item())
+                total_loss += w * loss_i
+                total_weight_sum += w
+                
+                if i == corrections.size(1) - 1:
+                    final_loss += loss_i
         
-        deep_loss = deep_loss / T
-        
-        # 3. Combined loss
-        total_loss = (
-            self.config.final_loss_weight * final_loss +
-            self.config.deep_loss_weight * deep_loss
-        )
+        total_loss = total_loss / max(total_weight_sum, 1.0)
+        final_loss = final_loss / T
         
         if return_losses:
-            return total_loss, torch.tensor(per_token_losses, device=device)
+            return total_loss, final_loss
         return total_loss
     
     @torch.no_grad()
@@ -211,56 +214,40 @@ class NovaRCV(nn.Module):
         top_p: float = 0.9,
         use_adaptive_compute: bool = True,
     ) -> torch.Tensor:
-        """
-        Generate text token by token with adaptive compute.
-        
-        Args:
-            input_ids: (B, T) prompt tokens
-            max_new_tokens: Number of tokens to generate
-            temperature: Sampling temperature
-            top_k: Top-k filtering
-            top_p: Nucleus sampling threshold
-            use_adaptive_compute: If True, harder tokens get more iterations
-            
-        Returns:
-            (B, T + max_new_tokens) complete sequence
-        """
+        """Generate with corrective ensemble and adaptive compute."""
         self.eval()
         device = input_ids.device
         B = input_ids.shape[0]
         
         # Initialize workspace
         workspace = self.init_workspace.expand(B, -1, -1)
-        
-        # Embed prompt tokens
         prompt_len = input_ids.shape[1]
-        x = self.embed(input_ids) * self.embed_scale
-        pos = torch.arange(prompt_len, device=device).unsqueeze(0)
-        x = x + self.pos_embed(pos)
         
-        # Process prompt tokens
+        # Embed prompt
+        x = self.embed(input_ids) * self.embed_scale
+        pos_ids = torch.arange(prompt_len, device=device).unsqueeze(0)
+        x = x + self._get_pos_encoding(pos_ids)
+        
+        # Process prompt tokens (fast mode: min iterations)
         for t in range(prompt_len):
             token_embed = x[:, t:t+1, :]
             workspace, _ = self.reasoner(
                 workspace, token_embed,
-                iter_limit=self.config.min_iter,  # Fast pass for prompt
+                iter_limit=self.config.min_iter,
                 return_all=False
             )
         
-        # Generate new tokens
         generated = input_ids.clone()
         
         for _ in range(max_new_tokens):
-            # Get last token's embedding
-            last_token = generated[:, -1:]  # (B, 1)
+            last_token = generated[:, -1:]
             last_embed = self.embed(last_token) * self.embed_scale
-            pos_id = torch.tensor([generated.shape[1] - 1], device=device).unsqueeze(0)
-            token_embed = last_embed + self.pos_embed(pos_id)
+            pos_id = torch.tensor([[generated.shape[1] - 1]], device=device)
+            token_embed = last_embed + self._get_pos_encoding(pos_id)
             
-            # Adaptive compute: estimate difficulty
-            if use_adaptive_compute and hasattr(self.reasoner, 'compute_predictor'):
+            # Adaptive compute
+            if use_adaptive_compute:
                 difficulty = self.reasoner.estimate_difficulty(workspace, token_embed)
-                # Map difficulty to iteration count
                 iter_limit = int(
                     self.config.min_iter + 
                     difficulty * (self.config.max_iter_cap - self.config.min_iter)
@@ -269,44 +256,44 @@ class NovaRCV(nn.Module):
             else:
                 iter_limit = self.config.max_iterations
             
-            # Reason with adaptive iterations
-            workspace, iter_outputs = self.reasoner(
+            # Get base prediction
+            first_slot = workspace[:, 0:1, :]
+            base = self.base_proj(first_slot)
+            
+            # Iterative corrections
+            workspace, corrections = self.reasoner(
                 workspace, token_embed,
                 iter_limit=iter_limit,
-                return_all=False
+                return_all=True
             )
             
-            # Get logits from the final (most refined) state
-            final_state = workspace[:, 0, :]  # (B, D) - first slot
-            logits = self.head(self.ln_out(final_state))  # (B, vocab)
+            # Ensemble: base + sum(corrections)
+            cumulative = base
+            for i in range(corrections.size(1)):
+                cumulative = cumulative + corrections[:, i:i+1, :]
             
-            # Apply temperature
-            logits = logits / temperature
+            logits = self.head(self.ln_out(cumulative))  # (B, 1, vocab)
+            logits = logits.squeeze(1) / temperature
             
             # Top-k filtering
             if top_k > 0:
                 top_k_vals, _ = torch.topk(logits, top_k, dim=-1)
-                min_top_k = top_k_vals[:, -1:]  # (B, 1)
-                logits[logits < min_top_k] = float('-inf')
+                logits[logits < top_k_vals[:, -1:]] = float('-inf')
             
             # Top-p (nucleus) filtering
             if top_p < 1.0:
                 sorted_logits, sorted_indices = torch.sort(logits, descending=True, dim=-1)
                 cumulative_probs = torch.cumsum(F.softmax(sorted_logits, dim=-1), dim=-1)
-                
-                # Remove tokens with cumulative probability above threshold
                 sorted_indices_to_remove = cumulative_probs > top_p
                 sorted_indices_to_remove[:, 1:] = sorted_indices_to_remove[:, :-1].clone()
                 sorted_indices_to_remove[:, 0] = False
-                
                 indices_to_remove = sorted_indices_to_remove.scatter(
                     1, sorted_indices, sorted_indices_to_remove
                 )
                 logits[indices_to_remove] = float('-inf')
             
-            # Sample
             probs = F.softmax(logits, dim=-1)
-            next_token = torch.multinomial(probs, num_samples=1)  # (B, 1)
+            next_token = torch.multinomial(probs, num_samples=1)
             generated = torch.cat([generated, next_token], dim=1)
         
         return generated
@@ -314,41 +301,25 @@ class NovaRCV(nn.Module):
     def get_param_count(self) -> dict:
         """Get parameter breakdown."""
         total = sum(p.numel() for p in self.parameters())
-        trainable = sum(p.numel() for p in self.parameters() if p.requires_grad)
-        
         counts = {
             'total': total,
-            'trainable': trainable,
+            'trainable': sum(p.numel() for p in self.parameters() if p.requires_grad),
             'embedding': sum(p.numel() for p in self.embed.parameters()),
             'brain': sum(p.numel() for p in self.reasoner.brain.parameters()),
             'debate': sum(p.numel() for p in self.reasoner.debate.parameters()),
-            'token_mixer': sum(p.numel() for p in self.reasoner.token_mixer.parameters()),
             'head': sum(p.numel() for p in self.head.parameters()),
-            'pos_embed': sum(p.numel() for p in self.pos_embed.parameters()),
+            'correction_proj': sum(p.numel() for p in self.reasoner.correction_proj.parameters()),
+            'base_proj': sum(p.numel() for p in self.base_proj.parameters()),
         }
-        
-        counts['effective_compute_depth'] = self.config.max_iterations
-        counts['effective_params_per_token'] = total * self.config.max_iterations
-        
         return counts
     
     def get_effective_size(self) -> str:
-        """
-        Get human-readable effective model size.
-        
-        With iteration reuse, the effective compute-equivalent size is:
-        effective_params = total_params * iterations
-        
-        For d_model=2048, expansion=4, max_iter=30:
-        ~300M * 30 = ~9B equivalent per token
-        But with 64 slots: ~600B equivalent
-        """
+        """Honest effective size estimation."""
         counts = self.get_param_count()
-        effective = counts['effective_params_per_token']
-        
-        if effective >= 1e12:
-            return f"{effective/1e12:.1f}T"
-        elif effective >= 1e9:
-            return f"{effective/1e9:.1f}B"
-        else:
-            return f"{effective/1e6:.1f}M"
+        total = counts['total']
+        # Corrective iterations don't multiply total compute by iterations
+        # because each iteration is a correction, not a full recomputation.
+        # The honest comparison: this model is a parameter-efficient alternative
+        # to a Transformer of similar total FLOPs.
+        # FLOPs comparison: iter * brain_FLOPs vs standard Transformer layer FLOPs
+        return f"{total/1e6:.1f}M"

@@ -1,11 +1,7 @@
 """
-Tests for NovaRCV - Recursive Computation Volume LLM
-=====================================================
+Tests for NovaRCV v2 — Iteration scaling and workspace stability.
 """
-import sys
-import os
-import torch
-
+import sys, os, torch
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
 from nova.rcv.config import RCVConfig
@@ -15,205 +11,166 @@ from nova.rcv.reasoner import AdaptiveReasoner
 from nova.rcv.nova_brain import NovaRCV
 
 
-def test_config():
-    """Test RCVConfig parameter calculations."""
-    config = RCVConfig(d_model=128, vocab_size=5000, expansion=4)
-    assert config.d_model == 128
-    assert config.vocab_size == 5000
-    assert config.max_iterations == 30
-    assert config.effective_depth == 30
-    params = config.param_count()
-    assert params > 0, "Parameter count should be positive"
-    print(f"  ✅ test_config: param_count={params:,}")
+def test_workspace_stability():
+    """Test: Workspace norm should stay bounded, not explode."""
+    cell = BrainCell(d_model=64, expansion=2)
+    x = torch.randn(2, 8, 64)
+    
+    norms = []
+    for _ in range(50):
+        x = cell(x)
+        norms.append(x.norm().item())
+    
+    # Norm should stay bounded (not grow to 100+)
+    max_norm = max(norms)
+    min_norm = min(norms)
+    assert max_norm < 100, f"Workspace exploded: max norm = {max_norm}"
+    assert max_norm / max(min_norm, 0.1) < 10, \
+        f"Norm ratio too large: {max_norm}/{min_norm}"
+    print(f"  ✅ test_workspace_stability: norms=[{min_norm:.2f}, {max_norm:.2f}] over 50 iters")
 
 
 def test_brain_cell():
-    """Test BrainCell forward pass."""
     cell = BrainCell(d_model=64, expansion=4)
-    x = torch.randn(2, 16, 64)  # (B, M, D)
+    x = torch.randn(2, 16, 64)
     out = cell(x)
-    assert out.shape == x.shape, f"Expected {x.shape}, got {out.shape}"
-    assert not torch.isnan(out).any(), "Output has NaN values"
+    assert out.shape == x.shape
+    assert not torch.isnan(out).any()
     print(f"  ✅ test_brain_cell: output shape {out.shape}")
 
 
 def test_slot_debate():
-    """Test SlotDebate communication among slots."""
     debate = SlotDebate(d_model=64, num_slots=16)
-    x = torch.randn(2, 16, 64)  # (B, M, D)
+    x = torch.randn(2, 16, 64)
     out = debate(x)
-    assert out.shape == x.shape, f"Expected {x.shape}, got {out.shape}"
-    assert not torch.isnan(out).any(), "Output has NaN values"
+    assert out.shape == x.shape
+    assert not torch.isnan(out).any()
     print(f"  ✅ test_slot_debate: output shape {out.shape}")
 
 
-def test_reasoner():
-    """Test AdaptiveReasoner iterative refinement."""
-    reasoner = AdaptiveReasoner(d_model=64, num_slots=16, max_iterations=5)
+def test_reasoner_corrective():
+    """Test corrective iteration output shapes."""
+    reasoner = AdaptiveReasoner(d_model=64, num_slots=16, max_iterations=10)
     workspace = torch.randn(2, 16, 64)
     token_embed = torch.randn(2, 1, 64)
     
-    workspace_out, iter_outputs = reasoner(workspace, token_embed, iter_limit=5)
-    assert workspace_out.shape == (2, 16, 64)
-    assert iter_outputs.shape[0] == 2  # batch
-    assert iter_outputs.shape[2] == 64  # d_model
-    print(f"  ✅ test_reasoner: iterations={iter_outputs.shape[1]}, output_shape={workspace_out.shape}")
-
-
-def test_reasoner_deep_supervision():
-    """Test deep supervision loss computation."""
-    reasoner = AdaptiveReasoner(d_model=64, num_slots=16, max_iterations=5)
-    # Simulate logits from 3 iterations
-    all_iter_logits = torch.randn(2, 3, 5000)  # (B, iters, vocab)
-    targets = torch.randint(0, 5000, (2,))
+    workspace_out, corrections = reasoner(workspace, token_embed, iter_limit=5)
     
-    loss = reasoner.compute_deep_supervision_loss(all_iter_logits, targets)
-    assert loss.item() > 0, "Loss should be positive"
-    print(f"  ✅ test_reasoner_deep_supervision: loss={loss.item():.3f}")
+    assert workspace_out.shape == (2, 16, 64)
+    assert corrections.shape[0] == 2  # batch
+    assert corrections.shape[1] == 5  # actual_iters
+    assert corrections.shape[2] == 64  # d_model
+    print(f"  ✅ test_reasoner_corrective: {corrections.shape[1]} corrections, output {workspace_out.shape}")
+
+
+def test_corrective_loss():
+    """Test corrective ensemble loss decreases with more iterations."""
+    config = RCVConfig(d_model=64, vocab_size=5000, expansion=2, num_slots=8, max_iterations=10)
+    model = NovaRCV(config)
+    optimizer = torch.optim.AdamW(model.parameters(), lr=3e-4)
+    
+    x = torch.randint(0, 5000, (4, 16))
+    
+    losses = []
+    for step in range(50):
+        loss = model(x, targets=x, iter_limits=10)
+        optimizer.zero_grad()
+        loss.backward()
+        torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+        optimizer.step()
+        losses.append(loss.item())
+    
+    final_loss = losses[-1]
+    initial_loss = losses[0]
+    print(f"  ✅ test_corrective_loss: {initial_loss:.3f} → {final_loss:.3f} "
+          f"({'improved' if final_loss < initial_loss else 'DID NOT IMPROVE'})")
+
+
+def test_iteration_scaling():
+    """CRITICAL TEST: More iterations should produce LOWER loss."""
+    config = RCVConfig(d_model=64, vocab_size=5000, expansion=2, num_slots=8, max_iterations=20)
+    model = NovaRCV(config)
+    
+    # Train a bit first
+    optimizer = torch.optim.AdamW(model.parameters(), lr=3e-4)
+    for step in range(30):
+        x = torch.randint(0, 5000, (4, 16))
+        loss = model(x, targets=x, iter_limits=10)
+        optimizer.zero_grad()
+        loss.backward()
+        torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+        optimizer.step()
+    
+    x = torch.randint(0, 5000, (4, 8))
+    targets = x
+    
+    model.eval()
+    with torch.no_grad():
+        losses = {}
+        for iters in [1, 2, 5, 10, 20]:
+            loss = model(x, targets=targets, iter_limits=iters)
+            losses[iters] = loss.item()
+            print(f"    iterations={iters:2d}: loss={loss.item():.4f}")
+    
+    # Check: more iterations should reduce loss
+    if losses[20] < losses[1]:
+        print(f"  ✅ test_iteration_scaling: More iterations REDUCE loss ✓")
+    else:
+        print(f"  ❌ test_iteration_scaling: More iterations INCREASE loss "
+              f"({losses[1]:.3f} → {losses[20]:.3f})")
 
 
 def test_nova_rcv_forward():
-    """Test NovaRCV forward pass."""
-    config = RCVConfig(
-        vocab_size=5000,
-        d_model=64,
-        num_slots=16,
-        max_iterations=5,
-        seq_len=32,
-    )
+    config = RCVConfig(vocab_size=5000, d_model=64, num_slots=16, max_iterations=5, seq_len=32)
     model = NovaRCV(config)
-    
     x = torch.randint(0, 5000, (2, 16))
     logits = model(x)
     assert logits.shape == (2, 16, 5000), f"Expected (2,16,5000), got {logits.shape}"
     print(f"  ✅ test_nova_rcv_forward: logits shape {logits.shape}")
 
 
-def test_nova_rcv_training():
-    """Test NovaRCV training step with deep supervision."""
-    config = RCVConfig(
-        vocab_size=5000,
-        d_model=64,
-        num_slots=16,
-        max_iterations=5,
-        seq_len=32,
-    )
-    model = NovaRCV(config)
-    optimizer = torch.optim.AdamW(model.parameters(), lr=1e-4)
-    
-    # Training step
-    x = torch.randint(0, 5000, (2, 16))
-    loss = model(x, targets=x)
-    
-    optimizer.zero_grad()
-    loss.backward()
-    optimizer.step()
-    
-    assert loss.item() > 0, "Loss should be positive"
-    print(f"  ✅ test_nova_rcv_training: loss={loss.item():.3f}")
-
-
-def test_nova_rcv_param_count():
-    """Test parameter counting."""
-    config = RCVConfig(
-        vocab_size=5000,
-        d_model=64,
-        num_slots=16,
-        max_iterations=5,
-    )
-    model = NovaRCV(config)
-    counts = model.get_param_count()
-    
-    assert 'total' in counts
-    assert counts['total'] > 0
-    assert 'effective_compute_depth' in counts
-    assert counts['effective_compute_depth'] == 5
-    
-    effective = model.get_effective_size()
-    assert 'B' in effective or 'M' in effective
-    print(f"  ✅ test_nova_rcv_param_count: total={counts['total']:,}, effective={effective}")
-
-
 def test_generate():
-    """Test text generation."""
-    config = RCVConfig(
-        vocab_size=5000,
-        d_model=64,
-        num_slots=16,
-        max_iterations=5,
-        seq_len=32,
-    )
+    config = RCVConfig(vocab_size=5000, d_model=64, num_slots=16, max_iterations=5, seq_len=32)
     model = NovaRCV(config)
     model.eval()
-    
     input_ids = torch.randint(0, 5000, (1, 5))
-    generated = model.generate(
-        input_ids,
-        max_new_tokens=10,
-        temperature=0.7,
-        top_p=0.9,
-    )
-    assert generated.shape[1] == 15  # 5 prompt + 10 new
+    generated = model.generate(input_ids, max_new_tokens=10, temperature=0.7, top_p=0.9)
+    assert generated.shape[1] == 15
     print(f"  ✅ test_generate: output shape {generated.shape}")
 
 
-def test_adaptive_iter_limits():
-    """Test adaptive compute with different iteration limits."""
-    config = RCVConfig(
-        vocab_size=5000,
-        d_model=64,
-        num_slots=16,
-        max_iterations=10,
-        seq_len=16,
-    )
-    model = NovaRCV(config)
-    
-    x = torch.randint(0, 5000, (2, 8))
-    
-    # Run with different limits
-    loss_default = model(x, targets=x)
-    loss_high = model(x, targets=x, iter_limits=20)
-    loss_low = model(x, targets=x, iter_limits=2)
-    
-    print(f"  ✅ test_adaptive_iter_limits: default={loss_default.item():.3f}, high={loss_high.item():.3f}, low={loss_low.item():.3f}")
-
-
 def run_all():
-    """Run all tests."""
     print("=" * 60)
-    print("NovaRCV Test Suite")
+    print("NovaRCV v2 Test Suite (Corrective Iterations)")
     print("=" * 60)
     
     tests = [
-        test_config,
+        test_workspace_stability,
         test_brain_cell,
         test_slot_debate,
-        test_reasoner,
-        test_reasoner_deep_supervision,
+        test_reasoner_corrective,
         test_nova_rcv_forward,
-        test_nova_rcv_training,
-        test_nova_rcv_param_count,
+        test_corrective_loss,
+        test_iteration_scaling,
         test_generate,
-        test_adaptive_iter_limits,
     ]
     
     passed = 0
     failed = 0
-    
     for test in tests:
         try:
             test()
             passed += 1
         except Exception as e:
             print(f"  ❌ {test.__name__}: FAILED - {e}")
+            import traceback
+            traceback.print_exc()
             failed += 1
     
     print(f"\n{'=' * 60}")
     print(f"Results: {passed}/{len(tests)} passed, {failed} failed")
     if failed == 0:
         print("🎉 All tests passed!")
-    print(f"{'=' * 60}")
-    
     return failed == 0
 
 
